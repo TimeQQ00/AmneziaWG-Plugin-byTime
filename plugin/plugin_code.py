@@ -21,9 +21,9 @@ from java import jclass
 
 __id__ = "amnezia_awg_byTime"
 __name__ = "AmneziaWG byTime"
-__description__ = "AmneziaWG-туннель (Cloudflare WARP) для Telegram. Сделано Time"
+__description__ = "AmneziaWG-туннель для Telegram со своими конфигами. Сделано Time"
 __author__ = "Time"
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 __icon__ = "exteraPlugins/1"
 __app_version__ = ">=12.5.1"
 __sdk_version__ = ">=1.4.4.3"
@@ -34,9 +34,10 @@ LIB_NAME = "libawgcore.so"
 LIB_BEGIN = "__LIB_BEGIN__"
 LIB_END = "__LIB_END__"
 
-# Стандартный сервер (Cloudflare WARP). Подставляется сборщиком из WARPv1_21.conf.
-# Пользователь может импортировать свой .conf — он сохраняется в настройках плагина
-# и имеет приоритет над этим значением.
+# Встроенный конфиг. В ЛИЧНОЙ сборке сборщик подставляет сюда JSON вашего .conf
+# (см. python plugin/build.py --conf путь/к/file.conf). В ПУБЛИЧНОЙ сборке это
+# значение пустое: плагин работает только с импортированными пользователем .conf
+# (настройки плагина -> «Путь к .conf файлу» -> «Импортировать и подключиться»).
 DEFAULT_ENGINE_CONFIG_JSON = __AWG_CONFIG_JSON__
 
 Build = jclass("android.os.Build")
@@ -53,8 +54,8 @@ TRANSLATIONS = {
     "starting": ("Amnezia byTime: запускаю туннель…", "Amnezia byTime: starting tunnel…"),
     "running": ("Amnezia byTime: туннель работает", "Amnezia byTime: tunnel is running"),
     "running_custom": ("Amnezia byTime: работает ваш конфиг", "Amnezia byTime: custom config is running"),
-    "running_fallback": ("Amnezia byTime: ваш конфиг не прошёл — вернул WARP",
-                         "Amnezia byTime: your config failed — restored WARP"),
+    "running_fallback": ("Amnezia byTime: ваш конфиг не прошёл — вернулся встроенный",
+                         "Amnezia byTime: your config failed — restored the built-in one"),
     "stopped": ("Amnezia byTime: туннель выключен", "Amnezia byTime: tunnel is stopped"),
     "start_failed": ("Amnezia byTime: не удалось запустить", "Amnezia byTime: failed to start"),
     "stop_failed": ("Amnezia byTime: не удалось остановить", "Amnezia byTime: failed to stop"),
@@ -63,13 +64,18 @@ TRANSLATIONS = {
     "menu_import": ("Amnezia byTime: применить конфиг", "Amnezia byTime: apply config"),
     "tunnel_dead": ("Amnezia byTime: туннель не пропускает трафик",
                     "Amnezia byTime: tunnel does not pass traffic"),
-    "custom_bad_fallback_failed": ("Amnezia byTime: не удалось поднять ни ваш конфиг, ни WARP",
-                                   "Amnezia byTime: failed with both your config and WARP"),
+    "no_config": ("Amnezia byTime: конфиг не задан — импортируйте свой .conf в настройках плагина",
+                  "Amnezia byTime: no config — import your .conf in the plugin settings"),
+    "custom_bad_fallback_failed": ("Amnezia byTime: не удалось поднять ни ваш конфиг, ни встроенный",
+                                   "Amnezia byTime: failed with both your config and the built-in one"),
+    "custom_bad_no_fallback": ("Amnezia byTime: ваш конфиг не заработал — туннель остановлен, проверьте конфиг",
+                               "Amnezia byTime: your config failed — tunnel stopped, check the config"),
     "settings_server": ("Сервер", "Server"),
     "settings_about": ("О плагине", "About"),
     "current_server": ("Активный сервер: {0}\nИсточник: {1}", "Active server: {0}\nSource: {1}"),
     "current_awg": ("AWG-параметров в конфиге: {0}", "AWG parameters in config: {0}"),
-    "src_default": ("стандартный Cloudflare WARP", "built-in Cloudflare WARP"),
+    "src_default": ("встроенный конфиг сборки", "config baked into this build"),
+    "src_none": ("конфиг не задан", "no config set"),
     "src_custom": ("ваш импортированный файл", "your imported file"),
     "conf_path": ("Путь к .conf файлу", "Path to .conf file"),
     "conf_path_hint": ("Например: /sdcard/Download/myvpn.conf — формат AmneziaWG/WireGuard",
@@ -81,12 +87,12 @@ TRANSLATIONS = {
                     "Supported wg-quick keys: PrivateKey, Address, DNS, MTU, Jc/Jmin/Jmax, S1-S4, "
                     "H1-H4, I1-I5, PublicKey, Endpoint, AllowedIPs."),
     "import_now": ("Импортировать и подключиться", "Import and connect"),
-    "reset_default": ("Вернуть стандартный WARP", "Restore built-in WARP"),
+    "reset_default": ("Сбросить конфиг (вернуть встроенный, если он вшит)", "Reset config (restore built-in, if any)"),
     "path_empty": ("Укажите путь к .conf файлу", "Enter the .conf file path"),
     "file_missing": ("Файл не найден: {0}", "File not found: {0}"),
     "import_failed": ("Ошибка импорта: {0}", "Import error: {0}"),
     "imported_ok": ("Конфиг применён: {0}", "Config applied: {0}"),
-    "reset_ok": ("Возвращён стандартный WARP", "Built-in WARP restored"),
+    "reset_ok": ("Готово — возвращён встроенный конфиг", "Done — built-in config restored"),
     "about_text": ("AmneziaWG byTime v{0}\nСделано Time.\n"
                    "Свой userspace-движок AmneziaWG (amneziawg-go + gVisor), локальный SOCKS5, "
                    "без системного VPN. Звонки идут напрямую (UDP не туннелируется).",
@@ -234,11 +240,14 @@ def parse_conf_text(text):
 
 
 def default_config():
+    """Встроенный конфиг личной сборки; None — если сборка публичная."""
+    if not DEFAULT_ENGINE_CONFIG_JSON:
+        return None
     return json.loads(DEFAULT_ENGINE_CONFIG_JSON)
 
 
 def current_config():
-    """Активный конфиг: пользовательский из настроек, иначе стандартный WARP."""
+    """Активный конфиг: пользовательский из настроек, иначе встроенный (если вшит)."""
     raw = get_setting("custom_config_json", "")
     if raw:
         try:
@@ -458,8 +467,10 @@ def disable_proxy():
 
 def tunnel_up(timeout=8.0):
     """Запускает туннель на активном конфиге; при провале пользовательского —
-    автоматически возвращается на стандартный WARP."""
+    автоматически возвращается на встроенный (если он вшит в сборку)."""
     cfg, is_custom = current_config()
+    if cfg is None:
+        raise RuntimeError(t("no_config"))
     ENGINE.start(cfg)
     if not ENGINE.wait_port(timeout):
         raise RuntimeError(t("start_failed"))
@@ -467,8 +478,10 @@ def tunnel_up(timeout=8.0):
         if is_custom:
             ENGINE.stop()
             set_setting("custom_config_json", "")
-            cfg = default_config()
-            ENGINE.start(cfg)
+            builtin = default_config()
+            if builtin is None:
+                raise RuntimeError(t("custom_bad_no_fallback"))
+            ENGINE.start(builtin)
             if not ENGINE.wait_port(timeout) or not ENGINE.verify_tunnel():
                 raise RuntimeError(t("custom_bad_fallback_failed"))
             install_proxy()
@@ -521,9 +534,14 @@ class AmneziaPlugin(BasePlugin):
         from ui.settings import Divider, Header, Input, Text
 
         cfg, is_custom = current_config()
-        source = t("src_custom") if is_custom else t("src_default")
-        endpoint = str(cfg.get("endpoint") or "?")
-        totals = str(len(list(cfg.get("awg") or {})))
+        if cfg is None:
+            source = t("src_none")
+            endpoint = "—"
+            totals = "0"
+        else:
+            source = t("src_custom") if is_custom else t("src_default")
+            endpoint = str(cfg.get("endpoint") or "?")
+            totals = str(len(list(cfg.get("awg") or {})))
 
         try:
             path = self.get_setting("conf_path", "") or ""
@@ -627,6 +645,12 @@ class AmneziaPlugin(BasePlugin):
         def worker():
             try:
                 set_setting("custom_config_json", "")
+                if default_config() is None:
+                    # Публичная сборка: встроенного конфига нет — останавливаем туннель.
+                    disable_proxy()
+                    ENGINE.stop()
+                    BulletinHelper.show(t("no_config"))
+                    return
                 BulletinHelper.show(t("starting"))
                 restart_tunnel()
                 BulletinHelper.show(t("reset_ok"))

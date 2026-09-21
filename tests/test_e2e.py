@@ -3,13 +3,15 @@
 
 Требуется:
   * engine/prebuilt/windows-amd64/awgcore_test.dll  (сборка: engine/build.ps1 -Windows)
-  * configs/default-warp.conf  (или .example — тогда тест скажет, что ключ-заглушка)
+  * реальный .conf: переменная окружения AWG_TEST_CONF или configs/default-warp.conf
+    (в публичном репозитории его нет — тест корректно SKIP)
 
 Запуск:
     python tests/test_e2e.py
 """
 import ctypes
 import json
+import os
 import pathlib
 import socket
 import struct
@@ -21,9 +23,17 @@ sys.path.insert(0, str(REPO / "tests"))
 import _stubs  # noqa: E402
 
 DLL = REPO / "engine" / "prebuilt" / "windows-amd64" / "awgcore_test.dll"
-CONF = REPO / "configs" / "default-warp.conf"
-CONF_EXAMPLE = REPO / "configs" / "default-warp.conf.example"
 PORT = 10809
+
+
+def find_conf():
+    env = os.environ.get("AWG_TEST_CONF")
+    if env and pathlib.Path(env).exists():
+        return pathlib.Path(env)
+    private = REPO / "configs" / "default-warp.conf"
+    if private.exists():
+        return private
+    return None
 
 
 def skip(message):
@@ -34,9 +44,9 @@ def skip(message):
 if not DLL.exists():
     skip("нет " + str(DLL) + " — соберите: pwsh engine/build.ps1 -Windows")
 
-conf_path = CONF if CONF.exists() else CONF_EXAMPLE
-if not conf_path.exists():
-    skip("нет конфига " + str(CONF))
+conf_path = find_conf()
+if conf_path is None:
+    skip("нет реального .conf — задайте переменную окружения AWG_TEST_CONF")
 
 namespace = _stubs.exec_plugin(REPO / "plugin" / "plugin_code.py")
 cfg = namespace["parse_conf_text"](conf_path.read_text(encoding="utf-8"))

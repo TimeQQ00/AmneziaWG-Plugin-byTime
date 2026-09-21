@@ -2,15 +2,19 @@
 """Сборка плагина AmneziaWG byTime.
 
 Собирает единый .plugin файл из:
-  * plugin/plugin_code.py      — Python-часть (метаданные, настройки, импорт);
-  * configs/default*.conf      — стандартный сервер, парсится в JSON;
-  * engine/prebuilt/libawgcore.so — движок, вшивается в base64.
+  * plugin/plugin_code.py            — Python-часть (метаданные, настройки, импорт);
+  * engine/prebuilt/libawgcore.so    — движок, вшивается в base64;
+  * .conf (опционально, только для ЛИЧНОЙ сборки) — вшивается как встроенный конфиг.
 
-Запуск (из любой папки):
+Публичная сборка (без личных данных — так собирается релиз):
     python plugin/build.py
-Результат:
-    dist/amnezia_awg_byTime.plugin
+
+Личная сборка (вшивает ваш конфиг с приватным ключом — НЕ публикуйте):
+    python plugin/build.py --conf путь/к/myvpn.conf --out dist/personal.plugin
+
+Результат по умолчанию: dist/amnezia_awg_byTime.plugin
 """
+import argparse
 import base64
 import json
 import pathlib
@@ -22,8 +26,6 @@ REPO = pathlib.Path(__file__).resolve().parents[1]
 
 SRC = REPO / "plugin" / "plugin_code.py"
 LIB = REPO / "engine" / "prebuilt" / "libawgcore.so"
-CONF = REPO / "configs" / "default-warp.conf"
-CONF_EXAMPLE = REPO / "configs" / "default-warp.conf.example"
 OUT = REPO / "dist" / "amnezia_awg_byTime.plugin"
 
 PLACEHOLDER = "__AWG_CONFIG_JSON__"
@@ -75,19 +77,29 @@ def parse_conf(path):
 
 
 def main():
-    conf = CONF if CONF.exists() else CONF_EXAMPLE
-    if not conf.exists():
-        raise SystemExit("нет файла конфига: " + str(CONF))
-    if conf is CONF_EXAMPLE:
-        print("! configs/default-warp.conf не найден, беру пример "
-              "(ключ-заглушка — туннель не подключится, пока не вставите свой)")
+    parser = argparse.ArgumentParser(description="Сборка плагина AmneziaWG byTime")
+    parser.add_argument("--conf", type=pathlib.Path, default=None,
+                        help=".conf для ЛИЧНОЙ сборки (вшивается с приватным ключом)")
+    parser.add_argument("--out", type=pathlib.Path, default=None,
+                        help="путь результата (по умолчанию dist/amnezia_awg_byTime.plugin)")
+    args = parser.parse_args()
 
-    cfg = parse_conf(conf)
-    cfg_json = json.dumps(cfg, separators=(",", ":"))
-    print("config:", conf.name,
-          "| endpoint:", cfg["endpoint"],
-          "| AWG-параметров:", len(cfg["awg"]),
-          "| ключ:", "заглушка" if cfg["privateKey"].startswith("<") else "задан")
+    if args.conf is not None:
+        if not args.conf.exists():
+            raise SystemExit("файл конфига не найден: " + str(args.conf))
+        cfg = parse_conf(args.conf)
+        cfg_json = json.dumps(cfg, separators=(",", ":"))
+        print("ЛИЧНАЯ сборка | config:", args.conf.name,
+              "| endpoint:", cfg["endpoint"],
+              "| AWG-параметров:", len(cfg["awg"]),
+              "| ключ:", "заглушка" if cfg["privateKey"].startswith("<") else "задан")
+        print("!! В файл вшит приватный ключ — не публикуйте его!")
+        out = args.out or (REPO / "dist" / "amnezia_awg_byTime_PERSONAL.plugin")
+    else:
+        # Публичная сборка: без вшитого конфига, плагин требует импорта .conf.
+        cfg_json = ""
+        out = args.out or OUT
+        print("ПУБЛИЧНАЯ сборка | встроенный конфиг: нет (пользователь импортирует свой .conf)")
 
     if not LIB.exists():
         raise SystemExit("нет движка: " + str(LIB) +
@@ -107,10 +119,10 @@ def main():
     _, post = rest.split(end, 1)
     code = pre + begin + "\n" + payload + "\n" + end + post
 
-    OUT.parent.mkdir(parents=True, exist_ok=True)
-    OUT.write_text(code, encoding="utf-8", newline="\n")
-    py_compile.compile(str(OUT), doraise=True)
-    print("OK ->", OUT, "|", round(OUT.stat().st_size / 1e6, 1), "MB |",
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(code, encoding="utf-8", newline="\n")
+    py_compile.compile(str(out), doraise=True)
+    print("OK ->", out, "|", round(out.stat().st_size / 1e6, 1), "MB |",
           "движок", round(len(raw) / 1e6, 1), "MB")
     return 0
 
