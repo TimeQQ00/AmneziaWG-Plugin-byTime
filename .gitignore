@@ -1,0 +1,19 @@
+# --- личные данные: НЕ публиковать ---
+# Реальный конфиг с вашим ключом (в репозитории лежит только .example)
+configs/default-warp.conf
+
+# --- артефакты сборки ---
+dist/
+__pycache__/
+*.pyc
+
+# --- тестовые бинарники (соберутся заново, см. engine/build.ps1) ---
+engine/prebuilt/windows-amd64/*.dll
+engine/prebuilt/windows-amd64/*.h
+
+# --- локальный мусор ---
+.idea/
+.vscode/
+*.log
+.DS_Store
+Thumbs.db
