@@ -136,9 +136,13 @@ go server.Serve(listener)
 
 **DNS уходит в туннель.** В go-socks5 обработчик CONNECT вызывает
 `dial(ctx, "tcp", request.DestAddr.String())` — то есть **имя хоста передаётся
-как есть**, если задан кастомный dialer. Никакого локального резолвинга: FQDN
-уходит в gVisor-стек, а тот резолвит его через DNS-серверы из конфига
-(`1.1.1.1`). Это и правильно, и быстрее.
+как есть**, если задан кастомный dialer. Тонкость: у go-socks5 есть и встроенный
+резолвер, который вызывается **до** dialer'а и при дефолтных настройках разрешил
+бы FQDN средствами Android — DNS-запрос ушёл бы мимо туннеля. Поэтому в движке
+задан passthrough-резолвер (`Resolve` возвращает IP = nil), после чего
+`AddrSpec.String()` честно возвращает FQDN, и доменное имя доходит до
+gVisor-стека, а тот резолвит его через DNS-серверы из конфига (`1.1.1.1`).
+Это и правильно, и быстрее.
 
 **Keepalive обязателен.** По умолчанию ставлю 25 секунд: мобильные сети
 безжалостно убивают NAT-сессии, и туннель «умирает» через минуту простоя.
@@ -175,7 +179,7 @@ exteraGram-плагины — это Python (Chaquopy, CPython 3.11) внутр�
 подгрузить через `ctypes`:
 
 ```python
-lib = ctypes.CDLL("/data/data/.../files/awgcore/libawgcore.so")
+lib = ctypes.CDLL("/data/data/<pkg>/app_awgcore/libawgcore.so")
 lib.awgStart.argtypes = [ctypes.c_char_p]
 lib.awgStart.restype = c_int
 lib.awgStart(json.dumps(cfg).encode())
@@ -394,7 +398,7 @@ def _resume_check(self):
 локальный SOCKS5 и аккуратная интеграция с внутренними API мессенджера.
 
 Если вам интересны детали реализации — исходники и тесты лежат рядом с плагином
-(`plugin_code.py`, `build.py`, `engine/test_e2e.py`), а собрать своё ядро можно
+(`plugin_code.py`, `build.py`, `tests/test_e2e.py`), а собрать своё ядро можно
 одной командой `go build` с NDK (раздел 3).
 
 Отдельное спасибо проектам, на которых всё это стоит:
