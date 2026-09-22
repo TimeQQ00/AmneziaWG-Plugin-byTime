@@ -17,3 +17,5 @@ engine/prebuilt/windows-amd64/*.h
 *.log
 .DS_Store
 Thumbs.db
+
+_personal/

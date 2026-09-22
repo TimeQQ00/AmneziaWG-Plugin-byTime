@@ -29,7 +29,7 @@ __id__ = "amnezia_awg_byTime"
 __name__ = "AmneziaWG byTime"
 __description__ = "AmneziaWG-туннель для Telegram со своими конфигами. Сделано Time"
 __author__ = "Time"
-__version__ = "1.3.0"
+__version__ = "1.3.1"
 __icon__ = "exteraPlugins/1"
 __app_version__ = ">=12.5.1"
 __sdk_version__ = ">=1.4.4.3"
@@ -138,6 +138,13 @@ TRANSLATIONS = {
                  "are kept."),
     "gen_started": ("Генерирую WARP-конфиг… (до 30 секунд)", "Generating WARP config… (up to 30 s)"),
     "gen_failed": ("Ошибка генерации: {0}\nПроверьте интернет и повторите.", "Generation failed: {0}\nCheck internet and retry."),
+    "rot_progress": ("Подбираю рабочий endpoint {0}/{1}: {2}…", "Trying endpoint {0}/{1}: {2}…"),
+    "rot_failed": ("Не сработал ни один WARP endpoint (перебраны порты 2408/4500/500/1701/8854/880). "
+                   "Похоже, WARP заблокирован в твоей сети. Попробуй: другой Wi-Fi/мобильный интернет, "
+                   "или выключи другой VPN (иконка «VPN» в шторке).",
+                   "No WARP endpoint worked (tried ports 2408/4500/500/1701/8854/880). "
+                   "WARP is likely blocked in your network. Try: another Wi-Fi/mobile data, "
+                   "or disable the other VPN (the 'VPN' icon in the status bar)."),
     "reset_ok": ("Готово — возвращён встроенный конфиг", "Done — built-in config restored"),
     "about_text": ("AmneziaWG byTime v{0}\nСделано Time.\n"
                    "Свой userspace-движок AmneziaWG (amneziawg-go + gVisor), локальный SOCKS5, "
@@ -412,6 +419,71 @@ def _pick_warp_endpoint():
         except OSError:
             continue
     return candidates[0]
+
+
+# WARP отвечает на нескольких UDP-портах; операторы часто блокируют выборочно.
+WARP_PORTS = (2408, 4500, 500, 1701, 8854, 880)
+
+
+def _warp_endpoint_candidates():
+    """Кандидаты «ip:порт»: сначала IP, где TCP отвечает, потом остальные;
+    каждый IP перебирается на всех известных WARP-портах."""
+    ips = []
+    for hostport in WARP_ENDPOINTS:
+        host = hostport.rpartition(":")[0]
+        if host not in ips:
+            ips.append(host)
+    alive, rest = [], []
+    for host in ips:
+        reachable = False
+        for port in (2408, 4500):
+            try:
+                probe = socket.create_connection((host, port), timeout=1.0)
+                probe.close()
+                reachable = True
+                break
+            except OSError:
+                continue
+        (alive if reachable else rest).append(host)
+    ordered = alive + rest
+    candidates = []
+    for port in WARP_PORTS:
+        for host in ordered:
+            candidates.append("%s:%d" % (host, port))
+    return candidates
+
+
+def _try_warp_endpoints(cfg, max_tries=12):
+    """Перебирает комбинации endpoint:порт с настоящей проверкой трафика
+    (реальный WireGuard-хендшейк через движок). Возвращает cfg с рабочим
+    endpoint'ом либо None, если не подошёл ни один."""
+    candidates = _warp_endpoint_candidates()
+    total = min(len(candidates), max_tries)
+    tried = 0
+    for ep in candidates:
+        if tried >= total:
+            break
+        tried += 1
+        if total > 1:
+            BulletinHelper.show(t("rot_progress").format(tried, total, ep))
+        _log("ротация: пробую %s (%d/%d)" % (ep, tried, total))
+        trial = dict(cfg)
+        trial["endpoint"] = ep
+        try:
+            ENGINE.start(trial)
+        except Exception as exc:
+            _log("ротация: старт не удался на %s: %s" % (ep, exc))
+            continue
+        if not ENGINE.wait_port(8.0):
+            ENGINE.stop()
+            _wait_port_closed(1.0)
+            continue
+        if ENGINE.verify_with_retry(attempts=1, timeout=6.0):
+            _log("ротация: РАБОЧИЙ endpoint найден — %s" % ep)
+            return trial
+        ENGINE.stop()
+        _wait_port_closed(1.0)
+    return None
 
 
 def _warp_api(method, path, body=None, token=None):
@@ -866,6 +938,18 @@ def tunnel_up(timeout=8.0):
             _log("tunnel_up: OK (%s)" % ("custom" if is_custom else "baked"))
             install_proxy()
             return "custom" if is_custom else "default"
+        # Трафик не идёт. Для сгенерированных WARP-конфигов сначала пробуем
+        # другие endpoint'ы и порты — операторы часто блокируют выборочно.
+        if cfg.get("generated"):
+            _log("tunnel_up: трафик не идёт, перебираю WARP endpoint'ы")
+            working = _try_warp_endpoints(cfg)
+            if working is not None:
+                set_setting("custom_config_json", json.dumps(working))
+                install_proxy()
+                return "custom"
+            ENGINE.stop()
+            _wait_port_closed(2.5)
+            raise RuntimeError(t("rot_failed"))
         # Трафик не идёт — глушим движок и пробуем встроенный конфиг.
         _log("tunnel_up: трафик не идёт, пробую встроенный")
         ENGINE.stop()
@@ -1298,25 +1382,34 @@ class AmneziaPlugin(BasePlugin):
         threading.Thread(target=worker, daemon=True).start()
 
     def _generate_clicked(self, *args):
-        """Кнопка «Сгенерировать»: новый WARP-аккаунт → конфиг → подключение."""
+        """Кнопка «Сгенерировать»: новый WARP-аккаунт → перебор endpoint'ов → подключение."""
         BulletinHelper.show(t("gen_started"))
 
         def worker():
             try:
                 text = generate_warp_config_text()
                 cfg = parse_conf_text(text)
+                cfg["generated"] = True
             except Exception as exc:
                 _log("генерация не удалась: %s" % exc)
                 BulletinHelper.show(t("gen_failed").format(str(exc)))
                 return
             set_setting("custom_config_json", json.dumps(cfg))
-            _log("генерация: конфиг готов (endpoint %s), подключаю" % cfg.get("endpoint"))
-            try:
-                result = restart_tunnel()
-                BulletinHelper.show(t("running_fallback") if result == "fallback"
-                                    else t("imported_ok").format(str(cfg.get("endpoint"))))
-            except Exception as exc:
-                BulletinHelper.show(t("import_failed").format(str(exc) or t("start_failed")))
+            _log("генерация: конфиг готов, подбираю рабочий endpoint")
+            with TUNNEL_LOCK:
+                try:
+                    disable_proxy()
+                    working = _try_warp_endpoints(cfg)
+                    if working is None:
+                        ENGINE.stop()
+                        _log("ротация: ни один endpoint не подошёл")
+                        BulletinHelper.show(t("rot_failed"))
+                        return
+                    set_setting("custom_config_json", json.dumps(working))
+                    install_proxy()
+                    BulletinHelper.show(t("imported_ok").format(str(working.get("endpoint"))))
+                except Exception as exc:
+                    BulletinHelper.show(t("import_failed").format(str(exc) or t("start_failed")))
 
         threading.Thread(target=worker, daemon=True).start()
 
