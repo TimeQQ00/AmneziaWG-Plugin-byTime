@@ -15,6 +15,11 @@ import time
 
 from base_plugin import AppEvent, BasePlugin, MenuItemData, MenuItemType
 from android_utils import run_on_ui_thread
+try:
+    from android_utils import log as sdk_log  # журнал exteraGram/Android logcat
+except Exception:
+    def sdk_log(*args, **kwargs):
+        pass
 from ui.bulletin import BulletinHelper
 
 from java import jclass
@@ -23,7 +28,7 @@ __id__ = "amnezia_awg_byTime"
 __name__ = "AmneziaWG byTime"
 __description__ = "AmneziaWG-туннель для Telegram со своими конфигами. Сделано Time"
 __author__ = "Time"
-__version__ = "1.2.0"
+__version__ = "1.2.1"
 __icon__ = "exteraPlugins/1"
 __app_version__ = ">=12.5.1"
 __sdk_version__ = ">=1.4.4.3"
@@ -33,6 +38,21 @@ ENGINE_DIR_NAME = "awgcore"
 LIB_NAME = "libawgcore.so"
 LIB_BEGIN = "__LIB_BEGIN__"
 LIB_END = "__LIB_END__"
+
+# ---------- журнал событий (для диагностики на устройстве) ----------
+_LOG_LINES = []
+_LOG_MAX = 120
+
+
+def _log(message):
+    line = "%s | %s" % (time.strftime("%H:%M:%S"), message)
+    _LOG_LINES.append(line)
+    if len(_LOG_LINES) > _LOG_MAX:
+        del _LOG_LINES[:len(_LOG_LINES) - _LOG_MAX]
+    try:
+        sdk_log("[AWG] " + str(message))
+    except Exception:
+        pass
 
 # Встроенный конфиг. В ЛИЧНОЙ сборке сборщик подставляет сюда JSON вашего .conf
 # (см. python plugin/build.py --conf путь/к/file.conf). В ПУБЛИЧНОЙ сборке это
@@ -106,6 +126,8 @@ TRANSLATIONS = {
                    "Copy the .conf contents and try again."),
     "file_denied": ("Нет доступа к файлу: {0}\nСкопируйте его в Download или используйте «Выбрать .conf».",
                     "Cannot access file: {0}\nCopy it to Download or use 'Pick .conf'."),
+    "diag": ("Диагностика подключения", "Run connection diagnostics"),
+    "diag_title": ("Amnezia byTime — диагностика", "Amnezia byTime — diagnostics"),
     "reset_ok": ("Готово — возвращён встроенный конфиг", "Done — built-in config restored"),
     "about_text": ("AmneziaWG byTime v{0}\nСделано Time.\n"
                    "Свой userspace-движок AmneziaWG (amneziawg-go + gVisor), локальный SOCKS5, "
@@ -268,6 +290,16 @@ def _scan_conf_files():
     return sorted(found.keys(), key=lambda p: found[p], reverse=True)
 
 
+def _network_state():
+    """Есть ли у телефона интернет вообще (проверка мимо туннеля)."""
+    try:
+        sock = socket.create_connection(("1.1.1.1", 443), timeout=3.0)
+        sock.close()
+        return "есть (прямое соединение 1.1.1.1:443)"
+    except OSError as exc:
+        return "НЕТ (%s) — без интернета туннель не поднимется" % exc
+
+
 def _conf_section(text, name):
     import re
     pattern = r"^\[" + name + r"\]\s*$(.*?)(?=^\[|\Z)"
@@ -417,6 +449,7 @@ class EngineCtl:
             lib.awgStatus.restype = c_int
             self.lib = lib
             self.lib_path = target
+            _log("движок загружен: " + target)
 
     def start(self, cfg=None):
         self.ensure_loaded()
@@ -425,21 +458,26 @@ class EngineCtl:
         self.port = int(cfg.get("socksPort") or SOCKS_PORT)
         # Если прошлый экземпляр ещё жив — гасим его и ждём освобождения порта.
         if self.status():
+            _log("start: прошлый экземпляр ещё жив — глушу")
             self.stop()
             _wait_port_closed(2.5)
+        _log("awgStart: endpoint=%s port=%s" % (cfg.get("endpoint"), self.port))
         rc = self.lib.awgStart(json.dumps(cfg).encode("utf-8"))
+        _log("awgStart: rc=%s" % rc)
         if rc == 0:
             return True
         if rc == -1:
             raise RuntimeError("движок отклонил конфиг (неверный JSON)")
         if rc == -2:
             # Порт мог быть занят чем-то другим — пробуем соседние.
+            _log("awgStart -2: порт занят, пробую соседние")
             for offset in range(1, 6):
                 probe = dict(cfg)
                 probe["socksPort"] = SOCKS_PORT + offset
                 rc = self.lib.awgStart(json.dumps(probe).encode("utf-8"))
                 if rc == 0:
                     self.port = SOCKS_PORT + offset
+                    _log("awgStart OK на порту %s" % self.port)
                     return True
             raise RuntimeError("движок не смог запуститься (код -2)")
         raise RuntimeError("движок не смог запуститься (код %s)" % rc)
@@ -489,7 +527,9 @@ class EngineCtl:
         CONNECT может не успеть за рукопожатием WireGuard — это не повод хоронить
         туннель и, тем более, стирать конфиг пользователя."""
         for attempt in range(attempts):
-            if self.verify_tunnel(timeout=timeout):
+            ok = self.verify_tunnel(timeout=timeout)
+            _log("verify #%s/%s: %s" % (attempt + 1, attempts, "ok" if ok else "fail"))
+            if ok:
                 return True
             if attempt + 1 < attempts:
                 time.sleep(pause)
@@ -540,6 +580,7 @@ def _wait_port_closed(timeout=2.5):
 
 def install_proxy():
     """Включает SOCKS5-прокси Telegram на локальный порт движка."""
+    _log("install_proxy: port=%s" % ENGINE.port)
     prefs = MessagesController.getGlobalMainSettings()
     prefs.edit().putBoolean("proxy_enabled", True).apply()
 
@@ -595,25 +636,31 @@ def tunnel_up(timeout=8.0):
         cfg, is_custom = current_config()
         if cfg is None:
             raise RuntimeError(t("no_config"))
+        _log("tunnel_up: source=%s endpoint=%s" % ("custom" if is_custom else "baked",
+                                                   cfg.get("endpoint")))
         ENGINE.start(cfg)
         if not ENGINE.wait_port(timeout):
+            _log("tunnel_up: порт не открылся за %s c" % timeout)
             raise RuntimeError(t("start_failed"))
         if ENGINE.verify_with_retry():
+            _log("tunnel_up: OK (%s)" % ("custom" if is_custom else "baked"))
             install_proxy()
             return "custom" if is_custom else "default"
         # Трафик не идёт — глушим движок и пробуем встроенный конфиг.
+        _log("tunnel_up: трафик не идёт, пробую встроенный")
         ENGINE.stop()
         _wait_port_closed(2.5)
         builtin = default_config()
         if builtin is None:
-            raise RuntimeError(t("custom_bad_no_fallback"))
+            raise RuntimeError(t("custom_bad_no_fallback") + "\nendpoint: %s" % cfg.get("endpoint"))
         if not is_custom:
-            raise RuntimeError(t("tunnel_dead"))
+            raise RuntimeError(t("tunnel_dead") + "\nendpoint: %s" % cfg.get("endpoint"))
         ENGINE.start(builtin)
         if not ENGINE.wait_port(timeout) or not ENGINE.verify_with_retry(attempts=2):
             ENGINE.stop()
-            raise RuntimeError(t("custom_bad_fallback_failed"))
+            raise RuntimeError(t("custom_bad_fallback_failed") + "\nendpoint: %s" % cfg.get("endpoint"))
         install_proxy()
+        _log("tunnel_up: fallback на встроенный")
         return "fallback"
 
 
@@ -721,6 +768,12 @@ class AmneziaPlugin(BasePlugin):
                 red=True,
                 on_click=self._reset_clicked,
             ),
+            Text(
+                link_alias="awg_diag",
+                text=t("diag"),
+                icon="msg_info",
+                on_click=self._diag_clicked,
+            ),
             Header(text=t("settings_about")),
             Text(link_alias="awg_about", icon="msg_info",
                  text=t("about_text")),
@@ -737,6 +790,7 @@ class AmneziaPlugin(BasePlugin):
             else:
                 BulletinHelper.show(t("running"))
         except Exception as exc:
+            _log("старт не удался: %s" % exc)
             BulletinHelper.show(str(exc) or t("start_failed"))
 
     def _resume_check(self):
@@ -748,11 +802,21 @@ class AmneziaPlugin(BasePlugin):
                     # само-восстанавливается при первом же пакете, а неудачный
                     # verify на проснувшейся сети раньше убивал рабочий туннель.
                     prefs = MessagesController.getGlobalMainSettings()
-                    if not prefs.getBoolean("proxy_enabled", False):
+                    proxy_current = None
+                    try:
+                        proxy_current = SharedConfig.currentProxy
+                    except Exception:
+                        pass
+                    if not prefs.getBoolean("proxy_enabled", False) or proxy_current is None:
+                        _log("resume: движок жив, но прокси выключен — включаю")
                         install_proxy()
+                    else:
+                        _log("resume: движок и прокси в порядке")
                     return
+                _log("resume: движок мёртв — перезапуск")
                 restart_tunnel()
-            except Exception:
+            except Exception as exc:
+                _log("resume: ошибка: %s" % exc)
                 pass
 
     def _full_stop(self):
@@ -921,9 +985,114 @@ class AmneziaPlugin(BasePlugin):
                 else:
                     BulletinHelper.show(t("running"))
             except Exception as exc:
+                _log("рестарт не удался: %s" % exc)
                 BulletinHelper.show(str(exc) or t("start_failed"))
 
         threading.Thread(target=worker, daemon=True).start()
+
+    # ---------- диагностика ----------
+
+    def _diag_clicked(self, *args):
+        """Проверяет всю цепочку «конфиг → сервер → движок → порт → трафик →
+        прокси Telegram» и показывает вердикт с журналом последних событий."""
+        def worker():
+            lines = []
+            verdict = None
+            try:
+                cfg, is_custom = current_config()
+                if cfg is None:
+                    lines.append("КОНФИГ: не задан — вот причина. Нажмите «Выбрать .conf» в настройках.")
+                    self._show_diag_dialog(lines)
+                    return
+                lines.append("КОНФИГ: %s, endpoint %s" % (
+                    "ваш импортированный" if is_custom else "вшитый в сборку",
+                    cfg.get("endpoint")))
+
+                lines.append("ИНТЕРНЕТ У ТЕЛЕФОНА: " + _network_state())
+
+                ep = str(cfg.get("endpoint") or "")
+                ep_host, _, ep_port = ep.rpartition(":")
+                if ep_host and ep_port:
+                    try:
+                        probe = socket.create_connection((ep_host, int(ep_port)), timeout=4.0)
+                        probe.close()
+                        lines.append("ENDPOINT %s: доступен" % ep)
+                    except OSError as exc:
+                        lines.append("ENDPOINT %s: НЕДОСТУПЕН (%s) — сервер лежит или порт закрыт" % (ep, exc))
+                else:
+                    lines.append("ENDPOINT: не распознан (%r)" % ep)
+
+                lines.append("ДВИЖОК: %s, статус: %s" % (
+                    "загружен" if ENGINE.lib is not None else "не загружен",
+                    "работает" if ENGINE.status() else "остановлен"))
+
+                port_open = ENGINE.port_open()
+                lines.append("ПОРТ 127.0.0.1:%s: %s" % (ENGINE.port, "открыт" if port_open else "закрыт"))
+
+                verify_ok = None
+                if port_open:
+                    verify_ok = ENGINE.verify_tunnel(timeout=8.0)
+                    lines.append("ТРАФИК ЧЕРЕЗ ТУННЕЛЬ: %s" % ("идёт" if verify_ok else "НЕ идёт"))
+
+                proxy_current = None
+                try:
+                    proxy_current = SharedConfig.currentProxy
+                except Exception:
+                    pass
+                try:
+                    proxy_pref = MessagesController.getGlobalMainSettings().getBoolean(
+                        "proxy_enabled", False)
+                except Exception:
+                    proxy_pref = False
+                lines.append("ПРОКСИ TELEGRAM: pref=%s, currentProxy=%s" % (
+                    proxy_pref, "задан" if proxy_current is not None else "НЕТ"))
+
+                if verify_ok and proxy_current is not None:
+                    verdict = "ВСЁ РАБОТАЕТ: туннель и прокси в порядке. Если страницы грузятся с задержкой — Telegram переподключается, подождите пару секунд."
+                elif verify_ok and proxy_current is None:
+                    verdict = "ТУННЕЛЬ РАБОТАЕТ, НО ПРОКСИ TELEGRAM ВЫКЛЮЧЕН. Нажмите «Перезапустить туннель» в меню плагина."
+                elif port_open and verify_ok is False:
+                    verdict = ("ДВИЖОК РАБОТАЕТ, НО ТРАФИК НЕ ИДЁТ: сервер %s недоступен "
+                               "изнутри туннеля или конфиг устарел — возьмите свежий .conf у администратора." % ep)
+                elif not port_open and ENGINE.lib is not None:
+                    verdict = "ДВИЖОК ЕСТЬ, НО ПОРТ ЗАКРЫТ. Нажмите «Перезапустить туннель»; если не поможет — пришлите журнал из этого окна."
+                elif ENGINE.lib is None:
+                    verdict = "ДВИЖОК НЕ ЗАГРУЖЕН. Переустановите плагин."
+            except Exception as exc:
+                lines.append("ОШИБКА ДИАГНОСТИКИ: %s" % exc)
+            lines.append("")
+            lines.append("--- журнал (последние события) ---")
+            lines.extend(_LOG_LINES[-30:])
+            if verdict:
+                lines.insert(0, "ВЕРДИКТ: " + verdict)
+            self._show_diag_dialog(lines)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _show_diag_dialog(self, lines):
+        def show():
+            try:
+                from client_utils import get_last_fragment
+                fragment = get_last_fragment()
+                activity = None
+                if fragment is not None:
+                    for getter in ("getParentActivity", "getActivity"):
+                        try:
+                            activity = getattr(fragment, getter)()
+                        except Exception:
+                            activity = None
+                        if activity is not None:
+                            break
+                if activity is None:
+                    raise RuntimeError("activity not ready")
+                jclass("android.app.AlertDialog$Builder")(activity) \
+                    .setTitle(t("diag_title")) \
+                    .setMessage("\n".join(lines)) \
+                    .setPositiveButton("OK", None) \
+                    .show()
+            except Exception:
+                BulletinHelper.show("\n".join(lines[:12]))
+        run_on_ui_thread(show)
 
 
 # __LIB_BEGIN__
