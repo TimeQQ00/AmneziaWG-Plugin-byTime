@@ -8,10 +8,12 @@
 (путь к вашему .conf с реальным ключом) и соберите тестовую DLL:
     set AWG_TEST_CONF=C:\\path\\to\\myvpn.conf
 """
+import json
 import os
 import pathlib
 import subprocess
 import sys
+import tempfile
 
 REPO = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "tests"))
@@ -63,7 +65,144 @@ def main():
     assert active is None and is_custom is False
     print("NO DEFAULT CONFIG TEST: PASS")
 
-    # 3) живой движок + verify_tunnel (нужны DLL и реальный конфиг)
+    # 3) нормализация пути: кавычки, пробелы, file://
+    normalize = namespace["_normalize_path"]
+    assert normalize('  "/sdcard/Download/my.conf" ') == "/sdcard/Download/my.conf"
+    assert normalize("'/sdcard/my.conf'") == "/sdcard/my.conf"
+    assert normalize("file:///sdcard/Download/my.conf") == "/sdcard/Download/my.conf"
+    assert normalize("content://downloads/document/3") == "content://downloads/document/3"
+    assert normalize("") == "" and normalize(None) == ""
+    print("NORMALIZE PATH TEST: PASS")
+
+    # 4) чтение источника: обычный файл
+    reader = namespace["_read_text_source"]
+    handle, tmp_name = tempfile.mkstemp(suffix=".conf")
+    os.write(handle, CONF_EXAMPLE.read_bytes())
+    os.close(handle)
+    try:
+        text = reader(tmp_name)
+    finally:
+        os.unlink(tmp_name)
+    assert "[Interface]" in text and "[Peer]" in text
+    print("READ SOURCE TEST: PASS")
+
+    # 5) ГЛАВНЫЙ РЕГРЕССИОННЫЙ ТЕСТ: verify-провал НЕ стирает пользовательский конфиг
+    class FakePlugin:
+        def __init__(self):
+            self.data = {}
+
+        def get_setting(self, key, default=None):
+            return self.data.get(key, default)
+
+        def set_setting(self, key, value, reload_settings=False):
+            self.data[key] = value
+
+    fake_plugin = FakePlugin()
+    namespace["_PLUGIN"] = fake_plugin
+    namespace["set_setting"]("custom_config_json", json.dumps(example))
+
+    class DeadEngine:
+        """Движок, у которого трафик никогда не проходит."""
+        port = 10809
+
+        def start(self, cfg):
+            pass
+
+        def wait_port(self, timeout=8.0):
+            return True
+
+        def verify_with_retry(self, **kwargs):
+            return False
+
+        def verify_tunnel(self, **kwargs):
+            return False
+
+        def stop(self):
+            pass
+
+        def status(self):
+            return False
+
+        def port_open(self):
+            return False
+
+    namespace["ENGINE"] = DeadEngine()
+    # 5а) публичная сборка (встроенного нет): ошибка, но конфиг сохранён
+    try:
+        namespace["tunnel_up"]()
+        raise AssertionError("ожидали RuntimeError (custom_bad_no_fallback)")
+    except RuntimeError:
+        pass
+    kept = json.loads(namespace["get_setting"]("custom_config_json"))
+    assert kept.get("privateKey") and kept.get("endpoint"), "конфиг был стёрт!"
+    print("NO-WIPE (no builtin) TEST: PASS")
+
+    # 5б) личная сборка: откат на встроенный, конфиг по-прежнему сохранён
+    class TwoPhaseEngine(DeadEngine):
+        """Свой конфиг не проходит, встроенный — проходит (со 2-й проверки)."""
+
+        def __init__(self):
+            self.verify_calls = 0
+
+        def verify_with_retry(self, **kwargs):
+            self.verify_calls += 1
+            return self.verify_calls >= 2
+
+    namespace["ENGINE"] = TwoPhaseEngine()
+    namespace["default_config"] = lambda: dict(example)
+    assert namespace["restart_tunnel"]() == "fallback"
+    kept = json.loads(namespace["get_setting"]("custom_config_json"))
+    assert kept.get("endpoint"), "конфиг был стёрт при откате!"
+    print("NO-WIPE (fallback) TEST: PASS")
+
+    # 5в) рабочий конфиг: tunnel_up возвращает "custom"
+    class GoodEngine(DeadEngine):
+        def verify_with_retry(self, **kwargs):
+            return True
+
+    namespace["ENGINE"] = GoodEngine()
+    assert namespace["tunnel_up"]() == "custom"
+    print("CUSTOM OK TEST: PASS")
+
+    # 6) _resume_check: живой движок не перезапускается
+    class AliveEngine(DeadEngine):
+        def __init__(self):
+            self.restarts = 0
+
+        def status(self):
+            return True
+
+        def port_open(self):
+            return True
+
+    alive = AliveEngine()
+
+    def fail_restart(*args, **kwargs):
+        alive.restarts += 1
+        raise AssertionError("resume не должен перезапускать живой туннель")
+
+    namespace["ENGINE"] = alive
+    namespace["restart_tunnel"] = fail_restart
+    plugin_instance = namespace["AmneziaPlugin"]()
+    plugin_instance._resume_check()
+    assert alive.restarts == 0
+    print("RESUME ALIVE TEST: PASS")
+
+    # 7) verify_with_retry: считает попытки и делает паузы
+    attempts = {"n": 0}
+
+    class RetryEngine:
+        def verify_tunnel(self, **kwargs):
+            attempts["n"] += 1
+            return attempts["n"] >= 3
+
+    engine = namespace["EngineCtl"]()
+    engine.verify_tunnel = RetryEngine().verify_tunnel
+    assert engine.verify_with_retry(attempts=3, pause=0) is True
+    assert attempts["n"] == 3
+    print("RETRY TEST: PASS")
+
+    # 8) живой движок + verify_tunnel (нужны DLL и реальный конфиг)
     conf_path = test_conf_path()
     if not DLL.exists():
         print("TUNNEL TEST: SKIP (нет " + str(DLL) + ")")

@@ -23,7 +23,7 @@ __id__ = "amnezia_awg_byTime"
 __name__ = "AmneziaWG byTime"
 __description__ = "AmneziaWG-туннель для Telegram со своими конфигами. Сделано Time"
 __author__ = "Time"
-__version__ = "1.1.0"
+__version__ = "1.2.0"
 __icon__ = "exteraPlugins/1"
 __app_version__ = ">=12.5.1"
 __sdk_version__ = ">=1.4.4.3"
@@ -54,8 +54,8 @@ TRANSLATIONS = {
     "starting": ("Amnezia byTime: запускаю туннель…", "Amnezia byTime: starting tunnel…"),
     "running": ("Amnezia byTime: туннель работает", "Amnezia byTime: tunnel is running"),
     "running_custom": ("Amnezia byTime: работает ваш конфиг", "Amnezia byTime: custom config is running"),
-    "running_fallback": ("Amnezia byTime: ваш конфиг не прошёл — вернулся встроенный",
-                         "Amnezia byTime: your config failed — restored the built-in one"),
+    "running_fallback": ("Amnezia byTime: ваш конфиг не прошёл — подключён встроенный (конфиг сохранён)",
+                         "Amnezia byTime: your config failed — built-in is active (your config is kept)"),
     "stopped": ("Amnezia byTime: туннель выключен", "Amnezia byTime: tunnel is stopped"),
     "start_failed": ("Amnezia byTime: не удалось запустить", "Amnezia byTime: failed to start"),
     "stop_failed": ("Amnezia byTime: не удалось остановить", "Amnezia byTime: failed to stop"),
@@ -64,8 +64,8 @@ TRANSLATIONS = {
     "menu_import": ("Amnezia byTime: применить конфиг", "Amnezia byTime: apply config"),
     "tunnel_dead": ("Amnezia byTime: туннель не пропускает трафик",
                     "Amnezia byTime: tunnel does not pass traffic"),
-    "no_config": ("Amnezia byTime: конфиг не задан — импортируйте свой .conf в настройках плагина",
-                  "Amnezia byTime: no config — import your .conf in the plugin settings"),
+    "no_config": ("Amnezia byTime: конфиг не задан — нажмите «Выбрать .conf» в настройках плагина",
+                  "Amnezia byTime: no config — tap 'Pick .conf' in the plugin settings"),
     "custom_bad_fallback_failed": ("Amnezia byTime: не удалось поднять ни ваш конфиг, ни встроенный",
                                    "Amnezia byTime: failed with both your config and the built-in one"),
     "custom_bad_no_fallback": ("Amnezia byTime: ваш конфиг не заработал — туннель остановлен, проверьте конфиг",
@@ -80,18 +80,32 @@ TRANSLATIONS = {
     "conf_path": ("Путь к .conf файлу", "Path to .conf file"),
     "conf_path_hint": ("Например: /sdcard/Download/myvpn.conf — формат AmneziaWG/WireGuard",
                        "Example: /sdcard/Download/myvpn.conf — AmneziaWG/WireGuard format"),
-    "import_hint": ("Импорт своей конфигурации: укажите путь к .conf и нажмите «Импортировать». "
+    "import_hint": ("Импорт конфига: «Выбрать .conf» ищет файлы в Download/Documents, «Из буфера» — "
+                    "импортирует скопированный текст, либо укажите путь вручную. "
                     "Ключи wg-quick: PrivateKey, Address, DNS, MTU, Jc/Jmin/Jmax, S1-S4, H1-H4, I1-I5, "
-                    "PublicKey, Endpoint, AllowedIPs. Файл читается в телефонной памяти.",
-                    "Import your own config: set the .conf path and tap Import. "
-                    "Supported wg-quick keys: PrivateKey, Address, DNS, MTU, Jc/Jmin/Jmax, S1-S4, "
-                    "H1-H4, I1-I5, PublicKey, Endpoint, AllowedIPs."),
+                    "PublicKey, Endpoint, AllowedIPs.",
+                    "Import a config: 'Pick .conf' scans Download/Documents, 'Clipboard' imports copied "
+                    "text, or enter the path manually. Supported wg-quick keys: PrivateKey, Address, "
+                    "DNS, MTU, Jc/Jmin/Jmax, S1-S4, H1-H4, I1-I5, PublicKey, Endpoint, AllowedIPs."),
     "import_now": ("Импортировать и подключиться", "Import and connect"),
     "reset_default": ("Сбросить конфиг (вернуть встроенный, если он вшит)", "Reset config (restore built-in, if any)"),
     "path_empty": ("Укажите путь к .conf файлу", "Enter the .conf file path"),
     "file_missing": ("Файл не найден: {0}", "File not found: {0}"),
     "import_failed": ("Ошибка импорта: {0}", "Import error: {0}"),
     "imported_ok": ("Конфиг применён: {0}", "Config applied: {0}"),
+    "pick_file": ("Выбрать .conf на устройстве", "Pick a .conf file on device"),
+    "pick_none": (".conf файлы не найдены. Положите файл в Download (или Documents) и повторите.",
+                  "No .conf files found. Put the file into Download (or Documents) and try again."),
+    "pick_title": ("Выберите конфиг", "Choose a config"),
+    "pick_many": ("Найдено несколько конфигов — выбран самый свежий:\n{0}",
+                  "Found several configs — took the newest:\n{0}"),
+    "clip_import": ("Импорт из буфера обмена", "Import from clipboard"),
+    "clip_empty": ("В буфере обмена нет текста конфига (должен быть [Interface]). "
+                   "Скопируйте содержимое .conf и повторите.",
+                   "Clipboard has no config text ([Interface] expected). "
+                   "Copy the .conf contents and try again."),
+    "file_denied": ("Нет доступа к файлу: {0}\nСкопируйте его в Download или используйте «Выбрать .conf».",
+                    "Cannot access file: {0}\nCopy it to Download or use 'Pick .conf'."),
     "reset_ok": ("Готово — возвращён встроенный конфиг", "Done — built-in config restored"),
     "about_text": ("AmneziaWG byTime v{0}\nСделано Time.\n"
                    "Свой userspace-движок AmneziaWG (amneziawg-go + gVisor), локальный SOCKS5, "
@@ -174,6 +188,84 @@ def set_setting(key, value):
             _PLUGIN.set_setting(key, value)
         except Exception:
             pass
+
+
+# ---------- удобный импорт: файл, буфер обмена, путь ----------
+
+def _normalize_path(path):
+    """Чистит путь: пробелы, кавычки, префикс file://."""
+    text = str(path or "").strip()
+    for quote in ('"', "'"):
+        if len(text) >= 2 and text.startswith(quote) and text.endswith(quote):
+            text = text[1:-1].strip()
+    if text.startswith("file://"):
+        text = text[len("file://"):]
+    return text.strip()
+
+
+def _read_text_source(source):
+    """Читает текст конфига из файла по пути или из content:// URI."""
+    if source.startswith("content://"):
+        context = ApplicationLoader.applicationContext
+        uri = jclass("android.net.Uri").parse(source)
+        stream = context.getContentResolver().openInputStream(uri)
+        try:
+            return bytes(stream.read()).decode("utf-8", "replace")
+        finally:
+            stream.close()
+    with open(source, "r", encoding="utf-8", errors="replace") as handle:
+        return handle.read()
+
+
+def _read_clipboard_text():
+    try:
+        context = ApplicationLoader.applicationContext
+        clipboard = context.getSystemService("clipboard")
+        clip = clipboard.getPrimaryClip()
+        if clip is None or int(clip.getItemCount()) == 0:
+            return None
+        text = clip.getItemAt(0).getText()
+        return str(text) if text is not None else None
+    except Exception:
+        return None
+
+
+def _scan_conf_files():
+    """Ищет .conf файлы в Download, Documents, корне памяти и каталоге приложения.
+    Возвращает пути, отсортированные по свежести (новые — первыми)."""
+    found = {}
+    roots = []
+    try:
+        ext = str(jclass("android.os.Environment")
+                  .getExternalStorageDirectory().getAbsolutePath())
+        roots += [ext + "/Download", ext + "/Documents", ext]
+    except Exception:
+        pass
+    try:
+        ext_dir = ApplicationLoader.applicationContext.getExternalFilesDir(None)
+        if ext_dir is not None:
+            roots.append(str(ext_dir.getAbsolutePath()))
+    except Exception:
+        pass
+    file_cls = jclass("java.io.File")
+    for root in roots:
+        try:
+            children = file_cls(root).listFiles()
+        except Exception:
+            continue
+        if children is None:
+            continue
+        for child in children:
+            try:
+                if not child.isFile():
+                    continue
+                name = str(child.getName()).lower()
+                if (name.endswith(".conf") or name.endswith(".conf.txt")
+                        or (name.endswith(".txt") and "conf" in name)):
+                    found[str(child.getAbsolutePath())] = int(child.lastModified())
+            except Exception:
+                continue
+    return sorted(found.keys(), key=lambda p: found[p], reverse=True)
 
 
 def _conf_section(text, name):
@@ -270,7 +362,7 @@ class EngineCtl:
         self.lib = None
         self.lib_path = None
         self.port = SOCKS_PORT
-        self.lock = threading.Lock()
+        self.lock = threading.RLock()
 
     def ensure_loaded(self):
         with self.lock:
@@ -331,6 +423,10 @@ class EngineCtl:
         if cfg is None:
             cfg, _ = current_config()
         self.port = int(cfg.get("socksPort") or SOCKS_PORT)
+        # Если прошлый экземпляр ещё жив — гасим его и ждём освобождения порта.
+        if self.status():
+            self.stop()
+            _wait_port_closed(2.5)
         rc = self.lib.awgStart(json.dumps(cfg).encode("utf-8"))
         if rc == 0:
             return True
@@ -388,6 +484,17 @@ class EngineCtl:
         except OSError:
             return False
 
+    def verify_with_retry(self, attempts=3, pause=1.5, timeout=8.0):
+        """Проверка с повторами. При пробуждении сети (утро, смена Wi-Fi) первый
+        CONNECT может не успеть за рукопожатием WireGuard — это не повод хоронить
+        туннель и, тем более, стирать конфиг пользователя."""
+        for attempt in range(attempts):
+            if self.verify_tunnel(timeout=timeout):
+                return True
+            if attempt + 1 < attempts:
+                time.sleep(pause)
+        return False
+
 
     def stop(self):
         with self.lock:
@@ -416,6 +523,19 @@ class EngineCtl:
 
 
 ENGINE = EngineCtl()
+
+TUNNEL_LOCK = threading.RLock()  # сериализует все операции жизненного цикла туннеля
+
+
+def _wait_port_closed(timeout=2.5):
+    """Ждёт, пока SOCKS5-порт старого движка реально освободится: без этого
+    awgStart получает занятый порт и молча «переползает» на соседний."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if not ENGINE.port_open():
+            return True
+        time.sleep(0.2)
+    return not ENGINE.port_open()
 
 
 def install_proxy():
@@ -467,35 +587,42 @@ def disable_proxy():
 
 def tunnel_up(timeout=8.0):
     """Запускает туннель на активном конфиге; при провале пользовательского —
-    автоматически возвращается на встроенный (если он вшит в сборку)."""
-    cfg, is_custom = current_config()
-    if cfg is None:
-        raise RuntimeError(t("no_config"))
-    ENGINE.start(cfg)
-    if not ENGINE.wait_port(timeout):
-        raise RuntimeError(t("start_failed"))
-    if not ENGINE.verify_tunnel():
-        if is_custom:
-            ENGINE.stop()
-            set_setting("custom_config_json", "")
-            builtin = default_config()
-            if builtin is None:
-                raise RuntimeError(t("custom_bad_no_fallback"))
-            ENGINE.start(builtin)
-            if not ENGINE.wait_port(timeout) or not ENGINE.verify_tunnel():
-                raise RuntimeError(t("custom_bad_fallback_failed"))
+    автоматически возвращается на встроенный (если он вшит в сборку).
+    Пользовательский конфиг при этом НИКОГДА не стирается: разовая неудача
+    (только что проснувшаяся сеть, моргнувший сервер) не должна стоить
+    пользователю его конфига."""
+    with TUNNEL_LOCK:
+        cfg, is_custom = current_config()
+        if cfg is None:
+            raise RuntimeError(t("no_config"))
+        ENGINE.start(cfg)
+        if not ENGINE.wait_port(timeout):
+            raise RuntimeError(t("start_failed"))
+        if ENGINE.verify_with_retry():
             install_proxy()
-            return "fallback"
-        raise RuntimeError(t("tunnel_dead"))
-    install_proxy()
-    return "custom" if is_custom else "default"
+            return "custom" if is_custom else "default"
+        # Трафик не идёт — глушим движок и пробуем встроенный конфиг.
+        ENGINE.stop()
+        _wait_port_closed(2.5)
+        builtin = default_config()
+        if builtin is None:
+            raise RuntimeError(t("custom_bad_no_fallback"))
+        if not is_custom:
+            raise RuntimeError(t("tunnel_dead"))
+        ENGINE.start(builtin)
+        if not ENGINE.wait_port(timeout) or not ENGINE.verify_with_retry(attempts=2):
+            ENGINE.stop()
+            raise RuntimeError(t("custom_bad_fallback_failed"))
+        install_proxy()
+        return "fallback"
 
 
 def restart_tunnel(timeout=8.0):
-    disable_proxy()
-    ENGINE.stop()
-    time.sleep(0.4)
-    return tunnel_up(timeout)
+    with TUNNEL_LOCK:
+        disable_proxy()
+        ENGINE.stop()
+        _wait_port_closed(2.5)
+        return tunnel_up(timeout)
 
 
 class AmneziaPlugin(BasePlugin):
@@ -526,7 +653,11 @@ class AmneziaPlugin(BasePlugin):
         if event_type == AppEvent.RESUME:
             threading.Thread(target=self._resume_check, daemon=True).start()
         elif event_type == AppEvent.STOP:
-            threading.Thread(target=self._full_stop, daemon=True).start()
+            # Туннель НЕ глушим при уходе в фон: он «тёплый» и продолжает
+            # обслуживать push-уведомления. Глушение здесь порождало гонку
+            # с _resume_check на возврате в приложение (подключение поднималось
+            # и сразу обрывалось).
+            pass
 
     # ---------- настройки ----------
 
@@ -555,6 +686,19 @@ class AmneziaPlugin(BasePlugin):
             Text(link_alias="awg_awg_params", icon="msg_info",
                  text=t("current_awg").format(totals)),
             Divider(text=t("import_hint")),
+            Text(
+                link_alias="awg_pick",
+                text=t("pick_file"),
+                icon="msg_file",
+                accent=True,
+                on_click=self._pick_conf_clicked,
+            ),
+            Text(
+                link_alias="awg_clip",
+                text=t("clip_import"),
+                icon="msg_copy",
+                on_click=self._clipboard_clicked,
+            ),
             Input(
                 key="conf_path",
                 link_alias="awg_conf_path",
@@ -596,12 +740,20 @@ class AmneziaPlugin(BasePlugin):
             BulletinHelper.show(str(exc) or t("start_failed"))
 
     def _resume_check(self):
-        try:
-            if ENGINE.status() and ENGINE.port_open() and ENGINE.verify_tunnel():
-                return  # туннель жив — ничего не трогаем
-            restart_tunnel()
-        except Exception:
-            pass
+        with TUNNEL_LOCK:
+            try:
+                if ENGINE.status() and ENGINE.port_open():
+                    # Движок жив — просто убеждаемся, что прокси включён.
+                    # Жёсткая проверка трафика здесь не нужна: WireGuard
+                    # само-восстанавливается при первом же пакете, а неудачный
+                    # verify на проснувшейся сети раньше убивал рабочий туннель.
+                    prefs = MessagesController.getGlobalMainSettings()
+                    if not prefs.getBoolean("proxy_enabled", False):
+                        install_proxy()
+                    return
+                restart_tunnel()
+            except Exception:
+                pass
 
     def _full_stop(self):
         disable_proxy()
@@ -616,28 +768,118 @@ class AmneziaPlugin(BasePlugin):
             return ""
 
     def _import_clicked(self, *args):
-        path = self._conf_path()
+        path = _normalize_path(self._conf_path())
         if not path:
             BulletinHelper.show(t("path_empty"))
             return
+        self._import_path(path)
 
+    def _import_path(self, raw_path):
+        """Читает .conf (файл или URI), применяет и перезапускает туннель."""
         def worker():
+            path = _normalize_path(raw_path)
             try:
-                path_clean = path.replace("file://", "")
                 try:
-                    with open(path_clean, "r", encoding="utf-8") as handle:
-                        text = handle.read()
+                    text = _read_text_source(path)
+                except PermissionError:
+                    BulletinHelper.show(t("file_denied").format(path))
+                    return
                 except OSError:
-                    BulletinHelper.show(t("file_missing").format(path_clean))
+                    BulletinHelper.show(t("file_missing").format(path))
                     return
                 cfg = parse_conf_text(text)
-                set_setting("custom_config_json", json.dumps(cfg))
-                BulletinHelper.show(t("starting"))
+            except Exception as exc:
+                BulletinHelper.show(t("import_failed").format(str(exc)))
+                return
+            set_setting("conf_path", path)
+            set_setting("custom_config_json", json.dumps(cfg))
+            BulletinHelper.show(t("starting"))
+            try:
                 result = restart_tunnel()
                 BulletinHelper.show(t("running_fallback") if result == "fallback"
                                     else t("imported_ok").format(str(cfg.get("endpoint"))))
             except Exception as exc:
+                BulletinHelper.show(t("import_failed").format(str(exc) or t("start_failed")))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _pick_conf_clicked(self, *args):
+        """Кнопка «Выбрать .conf»: ищет файлы в Download/Documents и предлагает выбор."""
+        def worker():
+            try:
+                candidates = _scan_conf_files()
+            except Exception:
+                candidates = []
+            if not candidates:
+                BulletinHelper.show(t("pick_none"))
+                return
+            if len(candidates) == 1:
+                self._import_path(candidates[0])
+                return
+            run_on_ui_thread(lambda: self._show_conf_chooser(candidates))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _show_conf_chooser(self, candidates):
+        """Диалог выбора конфига; при неудаче — берём самый свежий и сообщаем список."""
+        options = list(candidates)
+        try:
+            from client_utils import get_last_fragment
+            fragment = get_last_fragment()
+            activity = None
+            if fragment is not None:
+                for getter in ("getParentActivity", "getActivity"):
+                    try:
+                        activity = getattr(fragment, getter)()
+                    except Exception:
+                        activity = None
+                    if activity is not None:
+                        break
+            if activity is None:
+                raise RuntimeError("activity not ready")
+
+            click_cls = jclass("android.content.DialogInterface$OnClickListener")
+            plugin = self
+
+            class _Choose(click_cls):
+                def onClick(self, dialog, which):
+                    index = int(which)
+                    if 0 <= index < len(options):
+                        plugin._import_path(options[index])
+
+            names = [c.rsplit("/", 1)[-1] for c in options]
+            try:
+                from jarray import array as jarray_array
+                items = jarray_array(names, jclass("java.lang.String"))
+            except Exception:
+                items = names
+            jclass("android.app.AlertDialog$Builder")(activity) \
+                .setTitle(t("pick_title")) \
+                .setItems(items, _Choose()) \
+                .show()
+        except Exception:
+            BulletinHelper.show(t("pick_many").format("\n".join(options[:5])))
+            self._import_path(options[0])
+
+    def _clipboard_clicked(self, *args):
+        def worker():
+            text = _read_clipboard_text()
+            if not text or "[interface]" not in text.lower():
+                BulletinHelper.show(t("clip_empty"))
+                return
+            try:
+                cfg = parse_conf_text(text)
+            except Exception as exc:
                 BulletinHelper.show(t("import_failed").format(str(exc)))
+                return
+            set_setting("custom_config_json", json.dumps(cfg))
+            BulletinHelper.show(t("starting"))
+            try:
+                result = restart_tunnel()
+                BulletinHelper.show(t("running_fallback") if result == "fallback"
+                                    else t("imported_ok").format(str(cfg.get("endpoint"))))
+            except Exception as exc:
+                BulletinHelper.show(t("import_failed").format(str(exc) or t("start_failed")))
 
         threading.Thread(target=worker, daemon=True).start()
 
