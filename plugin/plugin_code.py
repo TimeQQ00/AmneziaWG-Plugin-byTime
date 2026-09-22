@@ -29,7 +29,7 @@ __id__ = "amnezia_awg_byTime"
 __name__ = "AmneziaWG byTime"
 __description__ = "AmneziaWG-туннель для Telegram со своими конфигами. Сделано Time"
 __author__ = "Time"
-__version__ = "1.3.2"
+__version__ = "1.3.3"
 __icon__ = "exteraPlugins/1"
 __app_version__ = ">=12.5.1"
 __sdk_version__ = ">=1.4.4.3"
@@ -488,17 +488,22 @@ class _LoadingDialog:
 
 
 def _pick_warp_endpoint():
-    """Живой endpoint WARP: TCP-проба по списку, иначе случайный из списка."""
+    """Живой endpoint WARP: TCP-проба по списку, иначе случайный из списка.
+    Каждая проба пишется в журнал отладки."""
     candidates = list(WARP_ENDPOINTS)
     random.shuffle(candidates)
     for hostport in candidates[:6]:
         host, _, port = hostport.rpartition(":")
         try:
+            started = time.time()
             probe = socket.create_connection((host, int(port)), timeout=2.0)
             probe.close()
+            _log("TCP-проба %s: OK (%.0f мс)" % (hostport, (time.time() - started) * 1000))
             return hostport
-        except OSError:
+        except OSError as exc:
+            _log("TCP-проба %s: fail (%s)" % (hostport, exc))
             continue
+    _log("TCP-пробы не удались, беру случайный endpoint")
     return candidates[0]
 
 
@@ -562,18 +567,24 @@ def _try_warp_endpoints(cfg, max_tries=12, progress=None):
         if not ENGINE.wait_port(8.0):
             ENGINE.stop()
             _wait_port_closed(1.0)
+            _log("ротация: %s — порт движка не открылся" % ep)
             continue
         if ENGINE.verify_with_retry(attempts=1, timeout=6.0):
             _log("ротация: РАБОЧИЙ endpoint найден — %s" % ep)
             return trial
+        ok, reason = ENGINE.verify_tunnel_detailed(timeout=6.0)
+        _log("ротация: %s — трафик не идёт (%s)" % (ep, reason))
         ENGINE.stop()
         _wait_port_closed(1.0)
     return None
 
 
 def _warp_api(method, path, body=None, token=None):
-    """Запрос к api.cloudflareclient.com через java.net — TLS и хранилище CA Android."""
+    """Запрос к api.cloudflareclient.com через java.net — TLS и хранилище CA Android.
+    Каждый запрос и ответ логируются с кодом и временем для отладки."""
     URL = jclass("java.net.URL")
+    started = time.time()
+    _log("CF API >> %s /%s" % (method, path))
     conn = URL(WARP_API_BASE + "/" + path).openConnection()
     conn.setConnectTimeout(15000)
     conn.setReadTimeout(20000)
@@ -595,7 +606,12 @@ def _warp_api(method, path, body=None, token=None):
         out.write(payload)
         out.flush()
         out.close()
-    code = int(conn.getResponseCode())
+    try:
+        code = int(conn.getResponseCode())
+    except Exception as exc:
+        _log("CF API << %s /%s: СЕТЬ/SSL ОШИБКА: %s" % (method, path, exc))
+        raise
+    elapsed = int((time.time() - started) * 1000)
     stream = conn.getInputStream() if code < 400 else conn.getErrorStream()
     text_out = ""
     if stream is not None:
@@ -609,13 +625,28 @@ def _warp_api(method, path, body=None, token=None):
             parts.append(str(line))
         reader.close()
         text_out = "\n".join(parts)
-    if code >= 400:
+    preview = text_out[:120].replace("\n", " ") if text_out else "(пусто)"
+    if code < 400:
+        _log("CF API << %s /%s: HTTP %s за %s мс" % (method, path, code, elapsed))
         try:
-            message = json.loads(text_out).get("message") if text_out else None
-        except Exception:
-            message = None
-        raise RuntimeError("Cloudflare API %s: HTTP %s %s" % (path, code, message or ""))
-    return json.loads(text_out) if text_out else {}
+            result = json.loads(text_out) if text_out else {}
+            if path == "reg" and method == "POST" and isinstance(result.get("result"), dict):
+                _log("CF API reg: id=…%s, config: v4=%s, peer=%s…" % (
+                    str(result["result"].get("id"))[-6:],
+                    ((result["result"].get("config") or {}).get("interface") or {})
+                    .get("addresses", {}).get("v4"),
+                    str(((result["result"].get("config") or {}).get("peers") or [{}])[0]
+                        .get("public_key"))[:8]))
+            return result
+        except Exception as exc:
+            _log("CF API /%s: ответ не JSON (%s): %r" % (path, exc, preview))
+            raise
+    _log("CF API << %s /%s: HTTP %s за %s мс, ответ: %s" % (method, path, code, elapsed, preview))
+    try:
+        message = json.loads(text_out).get("message") if text_out else None
+    except Exception:
+        message = None
+    raise RuntimeError("Cloudflare API %s: HTTP %s %s" % (path, code, message or ""))
 
 
 def generate_warp_config_text():
@@ -868,20 +899,33 @@ class EngineCtl:
         return False
 
     def verify_tunnel(self, host="1.1.1.1", port=80, timeout=8.0):
-        """Проверка данных через туннель: SOCKS5-подключение внутри движка."""
+        """Проверка данных через туннель (булево; причина — в verify_tunnel_detailed)."""
+        ok, _reason = self.verify_tunnel_detailed(host, port, timeout)
+        return ok
+
+    def verify_tunnel_detailed(self, host="1.1.1.1", port=80, timeout=8.0):
+        """Проверка трафика с человеческой причиной провала: возвращает (ok, reason).
+        reason объясняет, ГДЕ именно оборвалось: SOCKS5, CONNECT внутри туннеля
+        или HTTP-ответ — это ключ к пониманию, работает ли WireGuard вообще."""
         try:
-            sock = socket.create_connection(("127.0.0.1", self.port), timeout=timeout)
+            sock = socket.create_connection(("127.0.0.1", self.port), timeout=2.0)
+        except OSError as exc:
+            return False, "SOCKS5-порт %s не отвечает (%s) — движок умер?" % (self.port, exc)
+        try:
             sock.settimeout(timeout)
             sock.sendall(b"\x05\x01\x00")
             if sock.recv(2) != b"\x05\x00":
-                sock.close()
-                return False
+                return False, "SOCKS5-рукопожатие не прошло"
             raw = socket.inet_aton(host)
             sock.sendall(b"\x05\x01\x00\x01" + raw + struct.pack(">H", port))
             reply = sock.recv(4)
-            if len(reply) < 2 or reply[1] != 0:
-                sock.close()
-                return False
+            if len(reply) < 2:
+                return False, "нет ответа на CONNECT — движок закрылся"
+            if reply[1] != 0:
+                codes = {1: "general failure", 3: "network unreachable",
+                         4: "host unreachable", 5: "connection refused"}
+                return False, "движок не смог соединиться через туннель (код %s: %s)" % (
+                    reply[1], codes.get(reply[1], "прочее"))
             # Добираем остаток SOCKS5-ответа: ATYP + адрес + порт.
             atyp = reply[3]
             if atyp == 1:
@@ -894,18 +938,25 @@ class EngineCtl:
                     sock.recv(length[0] + 2)
             sock.sendall(b"HEAD / HTTP/1.0\r\nHost: %s\r\n\r\n" % host.encode())
             data = sock.recv(32)
-            sock.close()
-            return data.startswith(b"HTTP/")
-        except OSError:
-            return False
+            if data.startswith(b"HTTP/"):
+                return True, "OK"
+            return False, "соединение открыто, но HTTP-ответа нет — туннель «полумёртвый»"
+        except OSError as exc:
+            return False, "таймаут или обрыв (%s)" % exc
+        finally:
+            try:
+                sock.close()
+            except Exception:
+                pass
 
     def verify_with_retry(self, attempts=3, pause=1.5, timeout=8.0):
         """Проверка с повторами. При пробуждении сети (утро, смена Wi-Fi) первый
         CONNECT может не успеть за рукопожатием WireGuard — это не повод хоронить
         туннель и, тем более, стирать конфиг пользователя."""
         for attempt in range(attempts):
-            ok = self.verify_tunnel(timeout=timeout)
-            _log("verify #%s/%s: %s" % (attempt + 1, attempts, "ok" if ok else "fail"))
+            ok, reason = self.verify_tunnel_detailed(timeout=timeout)
+            _log("verify #%s/%s: %s" % (attempt + 1, attempts,
+                                        "ok" if ok else "fail — " + reason))
             if ok:
                 return True
             if attempt + 1 < attempts:
@@ -1458,9 +1509,28 @@ class AmneziaPlugin(BasePlugin):
 
     def _generate_clicked(self, *args):
         """Кнопка «Сгенерировать»: новый WARP-аккаунт → перебор endpoint'ов → подключение.
-        Показывает диалог прогресса: видно каждый шаг и заполнение шкалы."""
+        Прогресс-диалог + при любой ошибке — окно с полным отладочным отчётом."""
         progress = _LoadingDialog()
         progress.show(t("gen_config"), t("gen_started"))
+
+        def _fail_debug(title, exc):
+            """Показывает окно с журналом и причинами провала по шагам."""
+            progress.dismiss()
+            try:
+                ok, reason = ENGINE.verify_tunnel_detailed(timeout=5.0)
+            except Exception:
+                ok, reason = False, "проверка не выполнена"
+            lines = [
+                "ЧТО ПРОИЗОШЛО: " + title,
+                "ПРИЧИНА: %s" % exc,
+                "",
+                "СЕТЬ У ТЕЛЕФОНА: " + _network_state(),
+                "ПОСЛЕДНЯЯ ПРОВЕРКА ТУННЕЛЯ: %s (%s)" % ("ок" if ok else "fail", reason),
+                "",
+                "--- ПОЛНЫЙ ЖУРНАЛ (все шаги, запросы, пробы) ---",
+            ]
+            lines.extend(_LOG_LINES)
+            self._show_diag_dialog(lines)
 
         def worker():
             try:
@@ -1469,9 +1539,8 @@ class AmneziaPlugin(BasePlugin):
                 cfg = parse_conf_text(text)
                 cfg["generated"] = True
             except Exception as exc:
-                progress.dismiss()
+                _fail_debug("Шаг 1/3: регистрация в Cloudflare не удалась", exc)
                 _log("генерация не удалась: %s" % exc)
-                BulletinHelper.show(t("gen_failed").format(str(exc)))
                 return
             set_setting("custom_config_json", json.dumps(cfg))
             progress.update(t("gen_step_endpoints"), 2)
@@ -1486,8 +1555,9 @@ class AmneziaPlugin(BasePlugin):
                     if working is None:
                         ENGINE.stop()
                         _log("ротация: ни один endpoint не подошёл")
-                        progress.dismiss()
-                        BulletinHelper.show(t("rot_failed"))
+                        _fail_debug(
+                            "Шаг 2-3: ни один из WARP endpoint'ов не прошёл проверку трафика",
+                            t("rot_failed"))
                         return
                     progress.update(t("gen_step_connect"), 14)
                     set_setting("custom_config_json", json.dumps(working))
@@ -1495,8 +1565,7 @@ class AmneziaPlugin(BasePlugin):
                     progress.dismiss()
                     BulletinHelper.show(t("imported_ok").format(str(working.get("endpoint"))))
                 except Exception as exc:
-                    progress.dismiss()
-                    BulletinHelper.show(t("import_failed").format(str(exc) or t("start_failed")))
+                    _fail_debug("Подключение после генерации не удалось", exc)
 
         threading.Thread(target=worker, daemon=True).start()
 

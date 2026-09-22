@@ -192,12 +192,12 @@ def main():
     attempts = {"n": 0}
 
     class RetryEngine:
-        def verify_tunnel(self, **kwargs):
+        def verify_tunnel_detailed(self, **kwargs):
             attempts["n"] += 1
-            return attempts["n"] >= 3
+            return attempts["n"] >= 3, "ok" if attempts["n"] >= 3 else "ещё не готово"
 
     engine = namespace["EngineCtl"]()
-    engine.verify_tunnel = RetryEngine().verify_tunnel
+    engine.verify_tunnel_detailed = RetryEngine().verify_tunnel_detailed
     assert engine.verify_with_retry(attempts=3, pause=0) is True
     assert attempts["n"] == 3
     print("RETRY TEST: PASS")
