@@ -29,7 +29,7 @@ __id__ = "amnezia_awg_byTime"
 __name__ = "AmneziaWG byTime"
 __description__ = "AmneziaWG-туннель для Telegram со своими конфигами. Сделано Time"
 __author__ = "Time"
-__version__ = "1.3.1"
+__version__ = "1.3.2"
 __icon__ = "exteraPlugins/1"
 __app_version__ = ">=12.5.1"
 __sdk_version__ = ">=1.4.4.3"
@@ -136,7 +136,13 @@ TRANSLATIONS = {
                  "Creates a fresh WARP account (new keys, new I1 from the verified pool, "
                  "live endpoint) and connects right away. Previously imported configs "
                  "are kept."),
-    "gen_started": ("Генерирую WARP-конфиг… (до 30 секунд)", "Generating WARP config… (up to 30 s)"),
+    "gen_started": ("Генерирую WARP-конфиг…", "Generating WARP config…"),
+    "gen_step_register": ("Шаг 1/3: регистрирую WARP-аккаунт в Cloudflare…",
+                          "Step 1/3: registering WARP account with Cloudflare…"),
+    "gen_step_endpoints": ("Шаг 2/3: проверяю доступность endpoint'ов…",
+                           "Step 2/3: probing endpoint availability…"),
+    "gen_step_connect": ("Шаг 3/3: включаю прокси Telegram…",
+                         "Step 3/3: enabling Telegram proxy…"),
     "gen_failed": ("Ошибка генерации: {0}\nПроверьте интернет и повторите.", "Generation failed: {0}\nCheck internet and retry."),
     "rot_progress": ("Подбираю рабочий endpoint {0}/{1}: {2}…", "Trying endpoint {0}/{1}: {2}…"),
     "rot_failed": ("Не сработал ни один WARP endpoint (перебраны порты 2408/4500/500/1701/8854/880). "
@@ -406,6 +412,81 @@ def _pick_i1():
     return random.choice(list(I1_PAYLOAD_POOL) + [_sip_cps_i1()])
 
 
+def _current_activity():
+    """Текущая Activity exteraGram (для диалогов) или None."""
+    try:
+        from client_utils import get_last_fragment
+        fragment = get_last_fragment()
+        if fragment is None:
+            return None
+        for getter in ("getParentActivity", "getActivity"):
+            try:
+                activity = getattr(fragment, getter)()
+            except Exception:
+                activity = None
+            if activity is not None:
+                return activity
+    except Exception:
+        pass
+    return None
+
+
+class _LoadingDialog:
+    """Диалог прогресса на UI-потоке: indeterminate либо шкала с процентами.
+    Все вызовы безопасны из любого потока и не падают, если Activity нет."""
+
+    STYLE_SPINNER = 0
+    STYLE_HORIZONTAL = 1
+
+    def __init__(self):
+        self._dialog = None
+
+    def show(self, title, message, max_progress=None):
+        def build():
+            try:
+                activity = _current_activity()
+                if activity is None:
+                    return
+                dialog = jclass("android.app.ProgressDialog")(activity)
+                if max_progress:
+                    dialog.setProgressStyle(self.STYLE_HORIZONTAL)
+                    dialog.setMax(int(max_progress))
+                    dialog.setProgress(0)
+                else:
+                    dialog.setProgressStyle(self.STYLE_SPINNER)
+                dialog.setTitle(title)
+                dialog.setMessage(message)
+                dialog.setCancelable(False)
+                dialog.show()
+                self._dialog = dialog
+            except Exception:
+                pass
+        run_on_ui_thread(build)
+
+    def update(self, message, progress=None):
+        def refresh():
+            dialog = self._dialog
+            if dialog is None:
+                return
+            try:
+                dialog.setMessage(message)
+                if progress is not None:
+                    dialog.setProgress(int(progress))
+            except Exception:
+                pass
+        run_on_ui_thread(refresh)
+
+    def dismiss(self):
+        def close():
+            if self._dialog is not None:
+                try:
+                    self._dialog.dismiss()
+                except Exception:
+                    pass
+                self._dialog = None
+        run_on_ui_thread(close)
+
+
 def _pick_warp_endpoint():
     """Живой endpoint WARP: TCP-проба по списку, иначе случайный из списка."""
     candidates = list(WARP_ENDPOINTS)
@@ -453,10 +534,11 @@ def _warp_endpoint_candidates():
     return candidates
 
 
-def _try_warp_endpoints(cfg, max_tries=12):
+def _try_warp_endpoints(cfg, max_tries=12, progress=None):
     """Перебирает комбинации endpoint:порт с настоящей проверкой трафика
     (реальный WireGuard-хендшейк через движок). Возвращает cfg с рабочим
-    endpoint'ом либо None, если не подошёл ни один."""
+    endpoint'ом либо None, если не подошёл ни один. progress(message, value) —
+    необязательный колбэк для шкалы прогресса."""
     candidates = _warp_endpoint_candidates()
     total = min(len(candidates), max_tries)
     tried = 0
@@ -464,8 +546,11 @@ def _try_warp_endpoints(cfg, max_tries=12):
         if tried >= total:
             break
         tried += 1
-        if total > 1:
-            BulletinHelper.show(t("rot_progress").format(tried, total, ep))
+        message = t("rot_progress").format(tried, total, ep)
+        if progress is not None:
+            progress(message, tried)
+        else:
+            BulletinHelper.show(message)
         _log("ротация: пробую %s (%d/%d)" % (ep, tried, total))
         trial = dict(cfg)
         trial["endpoint"] = ep
@@ -1200,17 +1285,7 @@ class AmneziaPlugin(BasePlugin):
         """Диалог выбора конфига; при неудаче — берём самый свежий и сообщаем список."""
         options = list(candidates)
         try:
-            from client_utils import get_last_fragment
-            fragment = get_last_fragment()
-            activity = None
-            if fragment is not None:
-                for getter in ("getParentActivity", "getActivity"):
-                    try:
-                        activity = getattr(fragment, getter)()
-                    except Exception:
-                        activity = None
-                    if activity is not None:
-                        break
+            activity = _current_activity()
             if activity is None:
                 raise RuntimeError("activity not ready")
 
@@ -1382,33 +1457,45 @@ class AmneziaPlugin(BasePlugin):
         threading.Thread(target=worker, daemon=True).start()
 
     def _generate_clicked(self, *args):
-        """Кнопка «Сгенерировать»: новый WARP-аккаунт → перебор endpoint'ов → подключение."""
-        BulletinHelper.show(t("gen_started"))
+        """Кнопка «Сгенерировать»: новый WARP-аккаунт → перебор endpoint'ов → подключение.
+        Показывает диалог прогресса: видно каждый шаг и заполнение шкалы."""
+        progress = _LoadingDialog()
+        progress.show(t("gen_config"), t("gen_started"))
 
         def worker():
             try:
+                progress.update(t("gen_step_register"), 1)
                 text = generate_warp_config_text()
                 cfg = parse_conf_text(text)
                 cfg["generated"] = True
             except Exception as exc:
+                progress.dismiss()
                 _log("генерация не удалась: %s" % exc)
                 BulletinHelper.show(t("gen_failed").format(str(exc)))
                 return
             set_setting("custom_config_json", json.dumps(cfg))
-            _log("генерация: конфиг готов, подбираю рабочий endpoint")
+            progress.update(t("gen_step_endpoints"), 2)
+
+            def rotation_progress(message, value):
+                progress.update(message, 2 + value)
+
             with TUNNEL_LOCK:
                 try:
                     disable_proxy()
-                    working = _try_warp_endpoints(cfg)
+                    working = _try_warp_endpoints(cfg, progress=rotation_progress)
                     if working is None:
                         ENGINE.stop()
                         _log("ротация: ни один endpoint не подошёл")
+                        progress.dismiss()
                         BulletinHelper.show(t("rot_failed"))
                         return
+                    progress.update(t("gen_step_connect"), 14)
                     set_setting("custom_config_json", json.dumps(working))
                     install_proxy()
+                    progress.dismiss()
                     BulletinHelper.show(t("imported_ok").format(str(working.get("endpoint"))))
                 except Exception as exc:
+                    progress.dismiss()
                     BulletinHelper.show(t("import_failed").format(str(exc) or t("start_failed")))
 
         threading.Thread(target=worker, daemon=True).start()
@@ -1416,17 +1503,7 @@ class AmneziaPlugin(BasePlugin):
     def _show_diag_dialog(self, lines):
         def show():
             try:
-                from client_utils import get_last_fragment
-                fragment = get_last_fragment()
-                activity = None
-                if fragment is not None:
-                    for getter in ("getParentActivity", "getActivity"):
-                        try:
-                            activity = getattr(fragment, getter)()
-                        except Exception:
-                            activity = None
-                        if activity is not None:
-                            break
+                activity = _current_activity()
                 if activity is None:
                     raise RuntimeError("activity not ready")
                 jclass("android.app.AlertDialog$Builder")(activity) \
